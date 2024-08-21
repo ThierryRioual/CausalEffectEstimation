@@ -7,8 +7,22 @@ import pandas as pd
 import numpy as np
 
 from estimation_class.CausalModelEstimator import CausalModelEstimator
-from estimation_class.BackdoorEstimators import SLearner, TLearner, XLearner, PStratification, IPW
-from estimation_class.FrontdoorEstimators import FrontdoorSLearner, FrontdoorTLearner
+
+from estimation_class.BackdoorEstimators import (
+    SLearner,
+    TLearner,
+    XLearner,
+    PStratification,
+    IPW
+)
+from estimation_class.FrontdoorEstimators import (
+    FrontdoorSLearner,
+    FrontdoorTLearner
+)
+from estimation_class.InstrumentalVariableEstimators import (
+    LATE,
+    TSLS
+)
 
 class PotentialOutcomes:
     """
@@ -34,6 +48,7 @@ class PotentialOutcomes:
 
         self.df = df
         self.causal_model = causal_model
+        self.w = None
         self.M = None
         self.X = None
         self.T = None
@@ -103,12 +118,30 @@ class PotentialOutcomes:
             return
 
         match adjustment:
+
+            case "instrumental variable":
+                match estimator_string:
+                    case "LATE":
+                        self.estimator = LATE(**estimator_params)
+                    case "TSLS":
+                        self.estimator = TSLS(**estimator_params)
+                    case _:
+                        raise ValueError(
+                            "The specified estimator string does not correspond to any "\
+                            "supported instrumental variable estimator.\nConsider passing "\
+                            "the appropriate causalML object directly as an argument."\
+                            "\nThe accepted strings arguments are:"\
+                            "\n- CausalModelEstimator"\
+                            "\n- LATE"\
+                            "\n- TSLS"
+                        )
+
             case "frontdoor":
                 match estimator_string:
                     case "FrontdoorSLearner":
                         self.estimator = FrontdoorSLearner(**estimator_params)
                     case "FrontdoorTLearner":
-                        self.estimator = FrontdoorSLearner(**estimator_params)
+                        self.estimator = FrontdoorTLearner(**estimator_params)
                     case _:
                         raise ValueError(
                             "The specified estimator string does not correspond "\
@@ -146,6 +179,35 @@ class PotentialOutcomes:
                             "\n- IPW"\
                         )
 
+    def __instrumentalVariable(self) -> set[str]:
+        """
+        Identifies the instrumental variables.
+
+        Returns
+        -------
+        set[str]
+            Set with the names of the instrumental variables.
+        """
+
+        res = set()
+        bn = self.causal_model.causalBN()
+
+        parents = bn.parents(self.T) - self.causal_model.latentVariablesIds()
+        parents = set(map(lambda x: bn.variable(x).name(), parents))
+
+        y_parents = bn.parents(self.y) - self.causal_model.latentVariablesIds()
+        y_parents = set(map(lambda x: bn.variable(x).name(), y_parents))
+
+        for pa in parents:
+            if not csl._doorCriteria.exists_unblocked_directed_path(
+                bn, pa, self.y, {self.T}
+            ) \
+            and self.causal_model.backDoor(pa, self.y) is None \
+            and pa not in y_parents :
+                res.add(pa)
+
+        return res if len(res) > 0 else None
+
     def identifyAdjustmentSet(
             self,
             treatment : str,
@@ -168,17 +230,24 @@ class PotentialOutcomes:
         self.T = treatment
         self.y = outcome
 
+        frontdoor = self.causal_model.frontDoor(cause=treatment, effect=outcome)
+        if frontdoor is not None:
+            self.adjustment = "frontdoor"
+            self.M = frontdoor
+
         backdoor = self.causal_model.backDoor(cause=treatment, effect=outcome)
         if backdoor is not None:
             self.adjustment = "backdoor"
             self.X = backdoor
-            return self.adjustment
 
-        frondoor = self.causal_model.frontDoor(cause=treatment, effect=outcome)
-        if frondoor is not None:
-            self.adjustment = "frontdoor"
-            self.M = frondoor
-            return self.adjustment
+        instrumental_variable = self.__instrumentalVariable()
+        if instrumental_variable is not None:
+            self.adjustment = "instrumental variable"
+            self.w = instrumental_variable
+
+        self.X = dict() if self.X is None else self.X
+
+        return self.adjustment
 
     def fitEstimator(
             self,
@@ -218,18 +287,41 @@ class PotentialOutcomes:
             self.estimator = estimator
 
         match self.adjustment:
+
+            case "instrumental variable":
+                try:
+                    return self.estimator.fit(
+                        X = self.df[[*self.X]],
+                        treatment = self.df[self.T],
+                        y = self.df[self.y],
+                        w = self.df[[*self.w]],
+                        **fit_params
+                    )
+                except TypeError:
+                    return self.estimator.fit(
+                        X = self.df[[*self.X]],
+                        treatment = self.df[self.T],
+                        y = self.df[self.y],
+                        assignment = self.df[[*self.w]],
+                        **fit_params
+                    )
+    
             case "frontdoor":
-                return self.estimator.fit(M = self.df[[*self.M]],
+                return self.estimator.fit(
+                    M = self.df[[*self.M]],
                     treatment = self.df[self.T],
                     y = self.df[self.y],
                     **fit_params
                 )
+
             case "backdoor":
-                return self.estimator.fit(X = self.df[[*self.X]],
+                return self.estimator.fit(
+                    X = self.df[[*self.X]],
                     treatment = self.df[self.T],
                     y = self.df[self.y],
                     **fit_params
                 )
+            
             case _:
                 return
 
@@ -269,14 +361,20 @@ class PotentialOutcomes:
         """
 
         match self.adjustment:
+            case "instrumental variable":
+                return self._estimateIVCausalEffect(
+                    conditional,
+                    return_ci,
+                    estimation_params
+                )
             case "frontdoor":
-                return self.estimateFrontdoorCausalEffect(
+                return self._estimateFrontdoorCausalEffect(
                     conditional,
                     return_ci,
                     estimation_params
                 )
             case "backdoor":
-                return self.estimateBackdoorCausalEffect(
+                return self._estimateBackdoorCausalEffect(
                     conditional,
                     return_ci,
                     estimation_params
@@ -284,7 +382,76 @@ class PotentialOutcomes:
             case _:
                 return
 
-    def estimateFrontdoorCausalEffect(
+    def _estimateIVCausalEffect(
+            self,
+            conditional : pd.DataFrame | str | None = None,
+            return_ci : bool = False,
+            estimation_params : dict[str, Any] = None
+        ) -> float | np.ndarray:
+        """
+        Estimates the causal or treatment effect based on the initialized data
+        using frontdoor adjustment.
+
+        Parameters
+        ----------
+        conditional (optional): pd.DataFrame | str | None
+            Specifies conditions for estimating treatment effects.
+        return_ci (optional): bool
+            If True, returns the confidence interval along with the point estimate.
+        estimation_params (optional): dict[str, Any]
+            Additional parameters for the estimation method.
+
+        Returns
+        -------
+        float | np.ndarray
+            Returns the estimated treatment effect.
+        """
+
+        assert self.estimator is not None, \
+            "Please fit an estimator before attempting to make an estimate."
+
+        if estimation_params is None:
+            estimation_params = dict()
+        # ITE
+        if isinstance(conditional, pd.DataFrame):
+            conditional = pd.DataFrame(conditional)
+            return self.estimator.predict(
+                X = conditional[[*self.X]],
+                w = conditional[[*self.w]],
+                treatment = conditional[self.T],
+                y = conditional[self.y],
+                **estimation_params
+            )
+        # CATE
+        elif isinstance(conditional, str):
+            cond_df = self.df.query(conditional)
+            self.__conditionalAssertion(cond_df)
+            predictions = self.estimator.predict(
+                X = cond_df[[*self.X]],
+                w = cond_df[[*self.w]],
+                treatment = cond_df[self.T],
+                y = cond_df[self.y],
+                **estimation_params
+            )
+            return predictions.mean()
+        # ATE
+        elif conditional is None:
+            return self.estimator.estimate_ate(
+                X = self.df[[*self.X]],
+                w = self.df[[*self.w]],
+                treatment = self.df[self.T],
+                y = self.df[self.y],
+                pretrain = True,
+                **estimation_params
+            )
+        else:
+            raise ValueError(
+                "Invalid Conditional.\n"\
+                "Please use a Pandas DataFrame, string "\
+                "or Nonetype as the conditional."
+            )
+
+    def _estimateFrontdoorCausalEffect(
             self,
             conditional : pd.DataFrame | str | None = None,
             return_ci : bool = False,
@@ -350,7 +517,7 @@ class PotentialOutcomes:
                 "or Nonetype as the conditional."
             )
 
-    def estimateBackdoorCausalEffect(
+    def _estimateBackdoorCausalEffect(
             self,
             conditional : pd.DataFrame | str | None = None,
             return_ci : bool = False,
@@ -415,10 +582,4 @@ class PotentialOutcomes:
                 "Please use a Pandas DataFrame, string "\
                 "or Nonetype as the conditional."
             )
-
-
-    def validateCausalEstimate(self):
-        """
-        """
-        pass
 

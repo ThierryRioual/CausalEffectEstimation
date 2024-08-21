@@ -1,6 +1,3 @@
-import pyAgrum as gum
-import pyAgrum.causal as csl
-
 import pandas as pd
 import numpy as np
 

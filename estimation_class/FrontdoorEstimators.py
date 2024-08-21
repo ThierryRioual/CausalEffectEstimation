@@ -1,6 +1,3 @@
-import pyAgrum as gum
-import pyAgrum.causal as csl
-
 import pandas as pd
 import numpy as np
 
@@ -20,7 +17,6 @@ class FrontdoorSLearner:
     def __init__(
             self,
             learner : str | Any | None = None,
-            conditional_outcome_learner : str | Any | None = None,
             propensity_learner : str | Any | None = None
         ) -> None:
         """
@@ -29,16 +25,19 @@ class FrontdoorSLearner:
         Parameters
         ----------
         learner (optional): str | object | None
-            Base estimator for all learners.
+            Estimator for outcome variable.
             If not provided, defaults to LinearRegression.
+        propensity_learner (optional): str | object | None
+            Estimator for treatment proability.
+            If not provided, defaults to LogisticRegression.
         """
 
-        if conditional_outcome_learner is None:
-            self.conditional_outcome_learner = learnerFromString("LinearRegression")
-        elif isinstance(conditional_outcome_learner, str):
-            self.conditional_outcome_learner = learnerFromString(conditional_outcome_learner)
+        if learner is None:
+            self.learner = learnerFromString("LinearRegression")
+        elif isinstance(learner, str):
+            self.learner = learnerFromString(learner)
         else:
-            self.conditional_outcome_learner = clone(conditional_outcome_learner)
+            self.learner = clone(learner)
 
         if propensity_learner is None:
             self.propensity_learner = learnerFromString("LogisticRegression")
@@ -173,14 +172,15 @@ class FrontdoorSLearner:
 class FrontdoorTLearner:
     """
     Uses the Frontdoor Adjustment Formula, Pearl (1995),
-    to derive a S-Learner estimator.
+    to derive a T-Learner estimator.
     (see https://www.jstor.org/stable/2337329).
     """
 
     def __init__(
             self,
             learner : str | Any | None = None,
-            conditional_outcome_learner : str | Any | None = None,
+            control_outcome_learner : str | Any | None = None,
+            treatment_outcome_learner : str | Any | None = None,
             propensity_learner : str | Any | None = None
         ) -> None:
         """
@@ -191,14 +191,36 @@ class FrontdoorTLearner:
         learner (optional): str | object | None
             Base estimator for all learners.
             If not provided, defaults to LinearRegression.
+        control_outcome_learner (optional): str | object | None
+            Estimator for control group outcome.
+            Overrides `learner` if specified.
+        treatment_outcome_learner (optional): str | object | None
+            Estimator for control group outcome.
+            Overrides `learner` if specified.
+        propensity_learner (optional): str | object | None
+            Estimator for treatment proability.
+            If not provided, defaults to LogisticRegression.
         """
 
-        if conditional_outcome_learner is None:
-            self.conditional_outcome_learner = learnerFromString("LinearRegression")
-        elif isinstance(conditional_outcome_learner, str):
-            self.conditional_outcome_learner = learnerFromString(conditional_outcome_learner)
+        if learner is None:
+            self.control_outcome_learner = learnerFromString("LinearRegression")
+            self.treatment_outcome_learner = learnerFromString("LinearRegression")
+        elif isinstance(learner, str):
+            self.control_outcome_learner = learnerFromString(learner)
+            self.treatment_outcome_learner = learnerFromString(learner)
         else:
-            self.conditional_outcome_learner = clone(conditional_outcome_learner)
+            self.control_outcome_learner = clone(learner)
+            self.treatment_outcome_learner = learnerFromString(learner)
+
+        if isinstance(control_outcome_learner, str):
+            self.control_outcome_learner = learnerFromString(control_outcome_learner)
+        else:
+            self.control_outcome_learner = clone(control_outcome_learner)
+
+        if isinstance(treatment_outcome_learner, str):
+            self.treatment_outcome_learner = learnerFromString(treatment_outcome_learner)
+        else:
+            self.treatment_outcome_learner = clone(treatment_outcome_learner)
 
         if propensity_learner is None:
             self.propensity_learner = learnerFromString("LogisticRegression")
@@ -208,9 +230,6 @@ class FrontdoorTLearner:
             self.propensity_learner = clone(propensity_learner)
 
         self.treatment_probability = None
-
-        self.control_outcome_learner = self.conditional_outcome_learner
-        self.treatment_outcome_learner = self.conditional_outcome_learner
 
 
     def fit(
@@ -231,14 +250,6 @@ class FrontdoorTLearner:
         y : np.ndarray | pd.Series,
             The outcome vector.
         """
-
-        self.conditional_outcome_learner.fit(
-            X=pd.concat(
-                [pd.DataFrame(M), pd.DataFrame(treatment)],
-                axis=1
-            ),
-            y=np.array(y)
-        )
 
         self.control_outcome_learner.fit(
             X=M[treatment==0], y=y[treatment==0]
@@ -279,35 +290,6 @@ class FrontdoorTLearner:
         np.ndarray
             An array containing the predicted ITE.
         """
-
-        M_control = pd.concat(
-            [
-                pd.DataFrame(M),
-                pd.DataFrame(
-                    {
-                        self.conditional_outcome_learner.feature_names_in_[-1]: \
-                            np.zeros(len(M))
-                    },
-                    index=pd.DataFrame(M).index
-                )
-            ], axis=1
-        )
-
-        M_treatment = pd.concat(
-            [
-                pd.DataFrame(M),
-                pd.DataFrame(
-                    {
-                        self.conditional_outcome_learner.feature_names_in_[-1]: \
-                            np.ones(len(M))
-                    },
-                    index=pd.DataFrame(M).index
-                )
-            ], axis=1
-        )
-
-        #mu0 = self.conditional_outcome_learner.predict(X=M_control)
-        #mu1 = self.conditional_outcome_learner.predict(X=M_treatment)
 
         mu0 = self.control_outcome_learner.predict(X=M)
         mu1 = self.treatment_outcome_learner.predict(X=M)
