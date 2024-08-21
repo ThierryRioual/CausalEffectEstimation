@@ -1,194 +1,14 @@
 import pyAgrum as gum
 import pyAgrum.causal as csl
 
-from copy import deepcopy
-
 import pandas as pd
 import numpy as np
 
-
-
-from sklearn.linear_model import LinearRegression, PoissonRegressor, LogisticRegression, Ridge, Lasso, HuberRegressor
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, AdaBoostRegressor
-from sklearn.svm import SVR
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.neighbors import KNeighborsRegressor
-
-
-
-from sklearn.kernel_ridge import KernelRidge
-
-import xgboost as xgb
-from sklearn.model_selection import train_test_split
-
-from scipy.interpolate import interp1d
-
 from typing import Any
 
-class estimator:
-    """
-    """
-    def __init__(self, df : pd.DataFrame,
-                       cslbn : csl.CausalModel,
-                       treatment : str,
-                       outcome : str,
-                       covariates : set[str],
-                       conditional : dict[str : int | float] = None) -> None:
-        """
-        """
-        self.df = df
-        self.cslbn = cslbn
+from sklearn.base import clone
 
-        self.T = treatment
-        self.Y = outcome
-        self.X = covariates
-        self.cond = conditional
-
-        self.e = None
-
-
-    
-
-    def Rlearner2(self, learner : any):
-        """
-        """
-        m = copy.deepcopy(learner)
-        m.fit(X=self.df[[*self.X]], y=self.df[self.Y])
-        m_pred = m.predict(self.df[[*self.X]])
-
-        e = self.e if self.e is not None else self.propensityScoreFunc()
-        e_pred = e.predict_proba(self.df[[*self.X]])[:,1]
-
-        X = self.df[[*self.X]].to_numpy()
-        T = self.df[self.T].to_numpy()
-        Y = self.df[self.Y].to_numpy()
-
-        Y_tilde = Y - m_pred
-        T_tilde = T - e_pred
-
-        if self.cond == None:
-            df = self.df[[*self.X]]
-        else:
-            df = pd.DataFrame(columns=[*self.X], index=[0], data=self.cond)
-
-        lasso = Lasso(1e-4)
-        lasso.fit(X=T_tilde.reshape(-1,1) * X, y=Y_tilde)
-        return (df.to_numpy() @ lasso.coef_).mean()
-
-    
-
-    def AIPW(self, learner : any):
-        """
-        """
-
-        mu0 = copy.deepcopy(learner)
-        mu1 = copy.deepcopy(learner)
-
-        df0 = self.df[self.df[self.T] == 0]
-        df1 = self.df[self.df[self.T] == 1]
-
-        mu0.fit(X=df0[[*self.X]], y=df0[self.Y])
-        mu1.fit(X=df1[[*self.X]], y=df1[self.Y])
-
-        e = self.e if self.e is not None else self.propensityScoreFunc()
-
-        if self.cond == None:
-            df = self.df[[*self.X]]
-        else:
-            df = pd.DataFrame(columns=[*self.X], index=[0], data=self.cond)
-
-        e_pred = e.predict_proba(df)[:,1]
-
-        mu0_pred = mu0.predict(df)
-        mu1_pred = mu1.predict(df)
-
-        v_func = np.vectorize(lambda e, t, y, mu0, mu1: (t*y - (t-e)*mu1)/e - ((1-t)*y - (t-e)*mu0)/(1-e))
-        tau_list = v_func(e_pred, self.df[self.T], self.df[self.Y], mu0_pred, mu1_pred)
-
-        return tau_list.mean()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def _learnerFromString(learner_string : Any) -> Any:
-    """
-    Retrieve a scikit-learn learner based on a string specification.
-
-    Parameters
-    ----------
-    learner_string : str
-        The string specifying a supported scikit-learn model.
-
-    Returns
-    -------
-    sklearn.base.BaseEstimator
-        An instance of a scikit-learn estimator corresponding to the
-        specified string. This object will be used as the learner.
-    """
-
-    match learner_string:
-        case "LinearRegression":
-            return LinearRegression()
-        case "LogisticRegression":
-            return LogisticRegression()
-        case "Ridge":
-            return Ridge()
-        case "Lasso":
-            return Lasso()
-        case "PoissonRegressor":
-            return PoissonRegressor()
-        case "HuberRegressor":
-            return HuberRegressor()
-        case "DecisionTreeRegressor":
-            return DecisionTreeRegressor()
-        case "RandomForestRegressor":
-            return RandomForestRegressor()
-        case "GradientBoostingRegressor":
-            return GradientBoostingRegressor()
-        case "AdaBoostRegressor":
-            return AdaBoostRegressor()
-        case "SVR":
-            return SVR()
-        case "KNeighborsRegressor":
-            return KNeighborsRegressor()
-        case _:
-            raise ValueError(
-                "The specified learner string does not correspond to any "\
-                "supported learner.\nConsider passing the appropriate "\
-                "scikit-learn object directly as an argument.\n"\
-                "The accepted strings arguments are:"\
-                "\n- LinearRegression"\
-                "\n- Ridge"\
-                "\n- Lasso"\
-                "\n- PoissonRegressor"\
-                "\n- DecisionTreeRegressor"\
-                "\n- RandomForestRegressor"\
-                "\n- GradientBoostingRegressor"\
-                "\n- AdaBoostRegressor"\
-                "\n- SVR"\
-                "\n- KNeighborsRegressor"
-            )
-
+from estimation_class.Learners import learnerFromString
 
 class SLearner:
     """
@@ -208,11 +28,11 @@ class SLearner:
         """
 
         if isinstance(learner, str):
-            self.learner = _learnerFromString(learner)
+            self.learner = learnerFromString(learner)
         elif learner is None:
-            self.learner = _learnerFromString("LinearRegression")
+            self.learner = learnerFromString("LinearRegression")
         else:
-            self.learner = deepcopy(learner)
+            self.learner = clone(learner)
 
     def fit(
             self,
@@ -350,24 +170,24 @@ class TLearner:
         """
 
         if learner is None:
-            self.control_learner = _learnerFromString("LinearRegression")
-            self.treatment_learner = _learnerFromString("LinearRegression")
+            self.control_learner = learnerFromString("LinearRegression")
+            self.treatment_learner = learnerFromString("LinearRegression")
         elif isinstance(learner, str):
-            self.control_learner = _learnerFromString(learner)
-            self.treatment_learner = _learnerFromString(learner)
+            self.control_learner = learnerFromString(learner)
+            self.treatment_learner = learnerFromString(learner)
         else:
-            self.treatment_learner = deepcopy(learner)
-            self.control_learner = deepcopy(learner)
+            self.treatment_learner = clone(learner)
+            self.control_learner = clone(learner)
 
         if isinstance(control_learner, str):
-            self.control_learner = _learnerFromString(control_learner)
+            self.control_learner = learnerFromString(control_learner)
         elif control_learner is not None:
-            self.control_learner = deepcopy(control_learner)
+            self.control_learner = clone(control_learner)
 
         if isinstance(treatment_learner, str):
-            self.treatment_learner = _learnerFromString(treatment_learner)
+            self.treatment_learner = learnerFromString(treatment_learner)
         elif treatment_learner is not None:
-            self.treatment_learner = deepcopy(treatment_learner)
+            self.treatment_learner = clone(treatment_learner)
 
     def fit(
             self,
@@ -489,47 +309,47 @@ class XLearner:
         """
 
         if learner is None:
-            self.control_outcome_learner = _learnerFromString("LinearRegression")
-            self.treatment_outcome_learner = _learnerFromString("LinearRegression")
-            self.control_effect_learner = _learnerFromString("LinearRegression")
-            self.treatment_effect_learner = _learnerFromString("LinearRegression")
+            self.control_outcome_learner = learnerFromString("LinearRegression")
+            self.treatment_outcome_learner = learnerFromString("LinearRegression")
+            self.control_effect_learner = learnerFromString("LinearRegression")
+            self.treatment_effect_learner = learnerFromString("LinearRegression")
         elif isinstance(learner, str):
-            self.control_outcome_learner = _learnerFromString(learner)
-            self.treatment_outcome_learner = _learnerFromString(learner)
-            self.control_effect_learner = _learnerFromString(learner)
-            self.treatment_effect_learner = _learnerFromString(learner)
+            self.control_outcome_learner = learnerFromString(learner)
+            self.treatment_outcome_learner = learnerFromString(learner)
+            self.control_effect_learner = learnerFromString(learner)
+            self.treatment_effect_learner = learnerFromString(learner)
         else:
-            self.control_outcome_learner = deepcopy(learner)
-            self.treatment_outcome_learner = deepcopy(learner)
-            self.control_effect_learner = deepcopy(learner)
-            self.treatment_effect_learner = deepcopy(learner)
+            self.control_outcome_learner = clone(learner)
+            self.treatment_outcome_learner = clone(learner)
+            self.control_effect_learner = clone(learner)
+            self.treatment_effect_learner = clone(learner)
 
         if isinstance(control_outcome_learner, str):
-            self.control_outcome_learner = _learnerFromString(control_outcome_learner)
+            self.control_outcome_learner = learnerFromString(control_outcome_learner)
         elif control_outcome_learner is not None:
-            self.control_outcome_learner = deepcopy(control_outcome_learner)
+            self.control_outcome_learner = clone(control_outcome_learner)
 
         if isinstance(treatment_outcome_learner, str):
-            self.treatment_outcome_learner = _learnerFromString(treatment_outcome_learner)
+            self.treatment_outcome_learner = learnerFromString(treatment_outcome_learner)
         elif treatment_outcome_learner is not None:
-            self.treatment_outcome_learner = deepcopy(treatment_outcome_learner)
+            self.treatment_outcome_learner = clone(treatment_outcome_learner)
 
         if isinstance(control_effect_learner, str):
-            self.control_effect_learner = _learnerFromString(control_effect_learner)
+            self.control_effect_learner = learnerFromString(control_effect_learner)
         elif control_effect_learner is not None:
-            self.control_effect_learner = deepcopy(control_effect_learner)
+            self.control_effect_learner = clone(control_effect_learner)
 
         if isinstance(treatment_effect_learner, str):
-            self.treatment_effect_learner = _learnerFromString(treatment_effect_learner)
+            self.treatment_effect_learner = learnerFromString(treatment_effect_learner)
         elif treatment_effect_learner is not None:
-            self.treatment_effect_learner = deepcopy(treatment_effect_learner)
+            self.treatment_effect_learner = clone(treatment_effect_learner)
 
         if propensity_score_learner is None:
-            self.propensity_score_learner = _learnerFromString("LogisticRegression")
+            self.propensity_score_learner = learnerFromString("LogisticRegression")
         elif isinstance(propensity_score_learner, str):
-            self.propensity_score_learner = _learnerFromString(propensity_score_learner)
+            self.propensity_score_learner = learnerFromString(propensity_score_learner)
         else:
-            self.propensity_score_learner = deepcopy(propensity_score_learner)
+            self.propensity_score_learner = clone(propensity_score_learner)
 
 
     def fit(
@@ -645,11 +465,11 @@ class PStratification:
             If not provided, defaults to LogisticRegression.
         """
         if propensity_score_learner is None:
-            self.propensity_score_learner = _learnerFromString("LogisticRegression")
+            self.propensity_score_learner = learnerFromString("LogisticRegression")
         elif isinstance(propensity_score_learner, str):
-            self.propensity_score_learner = _learnerFromString(propensity_score_learner)
+            self.propensity_score_learner = learnerFromString(propensity_score_learner)
         else:
-            self.propensity_score_learner = deepcopy(propensity_score_learner)
+            self.propensity_score_learner = clone(propensity_score_learner)
 
     def fit(
             self,
@@ -788,11 +608,11 @@ class IPW:
             If not provided, defaults to LogisticRegression.
         """
         if propensity_score_learner is None:
-            self.propensity_score_learner = _learnerFromString("LogisticRegression")
+            self.propensity_score_learner = learnerFromString("LogisticRegression")
         elif isinstance(propensity_score_learner, str):
-            self.propensity_score_learner = _learnerFromString(propensity_score_learner)
+            self.propensity_score_learner = learnerFromString(propensity_score_learner)
         else:
-            self.propensity_score_learner = deepcopy(propensity_score_learner)
+            self.propensity_score_learner = clone(propensity_score_learner)
 
     def fit(
             self,
@@ -869,3 +689,33 @@ class IPW:
         """
 
         return self.predict(X, treatment, y).mean()
+
+def __AIPW(self, learner : any):
+        """
+        """
+
+        mu0 = clone(learner)
+        mu1 = clone(learner)
+
+        df0 = self.df[self.df[self.T] == 0]
+        df1 = self.df[self.df[self.T] == 1]
+
+        mu0.fit(X=df0[[*self.X]], y=df0[self.Y])
+        mu1.fit(X=df1[[*self.X]], y=df1[self.Y])
+
+        e = self.e if self.e is not None else self.propensityScoreFunc()
+
+        if self.cond == None:
+            df = self.df[[*self.X]]
+        else:
+            df = pd.DataFrame(columns=[*self.X], index=[0], data=self.cond)
+
+        e_pred = e.predict_proba(df)[:,1]
+
+        mu0_pred = mu0.predict(df)
+        mu1_pred = mu1.predict(df)
+
+        v_func = np.vectorize(lambda e, t, y, mu0, mu1: (t*y - (t-e)*mu1)/e - ((1-t)*y - (t-e)*mu0)/(1-e))
+        tau_list = v_func(e_pred, self.df[self.T], self.df[self.Y], mu0_pred, mu1_pred)
+
+        return tau_list.mean()
