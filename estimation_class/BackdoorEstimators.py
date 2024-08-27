@@ -65,10 +65,11 @@ class SLearner:
             y : np.ndarray | pd.Series | None = None,
         )-> np.ndarray:
         """
-        Predict the Individual Treatment Effect (ITE).
+        Predict the Idividual Causal Effect (ICE),
+        also referd to as the Individual Treatment Effect (ITE).
 
-        Note: For an S-learner, the ITE is constant and corresponds to the
-        Average Treatment Effect (ATE) of the fitted groups, due to the
+        Note: For an S-learner, the ICE is constant and corresponds to the
+        Average Causal Effect (ACE) of the fitted groups, due to the
         use of a single linear model.
 
         Parameters
@@ -83,7 +84,7 @@ class SLearner:
         Returns
         -------
         np.ndarray
-            An array containing the predicted ITE.
+            An array containing the predicted ICE.
         """
 
         X_control = pd.concat(
@@ -119,7 +120,9 @@ class SLearner:
             pretrain : bool = True
         ) -> float:
         """
-        Predicts the Average Treatment Effect (ATE).
+        Predicts the Average Causal Effect (ACE),
+        also refered to as the Average Treatment Effect (ATE).
+        (The term ATE is used in the method name for compatibility purposes.)
 
         Parameters
         ----------
@@ -133,7 +136,7 @@ class SLearner:
         Returns
         -------
         float
-            The value of the ATE.
+            The value of the ACE.
         """
 
         return self.predict(X, treatment, y).mean()
@@ -215,7 +218,8 @@ class TLearner:
             y : np.ndarray | pd.Series | None = None,
         )-> np.ndarray:
         """
-        Predict the Individual Treatment Effect (ITE).
+        Predict the Idividual Causal Effect (ICE),
+        also referd to as the Individual Treatment Effect (ITE).
 
         Parameters
         ----------
@@ -229,7 +233,7 @@ class TLearner:
         Returns
         -------
         np.ndarray
-            An array containing the predicted ITE.
+            An array containing the predicted ICE.
         """
 
         mu0 = self.control_learner.predict(X=X)
@@ -245,7 +249,9 @@ class TLearner:
             pretrain : bool = True
         ) -> float:
         """
-        Predicts the Average Treatment Effect (ATE).
+        Predicts the Average Causal Effect (ACE),
+        also refered to as the Average Treatment Effect (ATE).
+        (The term ATE is used in the method name for compatibility purposes.)
 
         Parameters
         ----------
@@ -259,7 +265,7 @@ class TLearner:
         Returns
         -------
         float
-            The value of the ATE.
+            The value of the ACE.
         """
 
         return self.predict(X, treatment, y).mean()
@@ -389,7 +395,8 @@ class XLearner:
             y : np.ndarray | pd.Series | None = None,
         )-> np.ndarray:
         """
-        Predict the Individual Treatment Effect (ITE).
+        Predict the Idividual Causal Effect (ICE),
+        also referd to as the Individual Treatment Effect (ITE).
 
         Parameters
         ----------
@@ -403,7 +410,7 @@ class XLearner:
         Returns
         -------
         np.ndarray
-            An array containing the predicted ITE.
+            An array containing the predicted ICE.
         """
 
         tau0 = self.control_effect_learner.predict(X)
@@ -422,7 +429,9 @@ class XLearner:
             pretrain : bool = True
         ) -> float:
         """
-        Predicts the Average Treatment Effect (ATE).
+        Predicts the Average Causal Effect (ACE),
+        also refered to as the Average Treatment Effect (ATE).
+        (The term ATE is used in the method name for compatibility purposes.)
 
         Parameters
         ----------
@@ -436,7 +445,7 @@ class XLearner:
         Returns
         -------
         float
-            The value of the ATE.
+            The value of the ACE.
         """
 
         return self.predict(X, treatment, y).mean()
@@ -496,7 +505,8 @@ class PStratification:
             num_strata : int = None,
         )-> np.ndarray:
         """
-        Predict the Individual Treatment Effect (ITE).
+        Predict the Idividual Causal Effect (ICE),
+        also referd to as the Individual Treatment Effect (ITE).
 
         Parameters
         ----------
@@ -512,23 +522,35 @@ class PStratification:
         Returns
         -------
         np.ndarray
-            An array containing the predicted ITE.
+            An array containing the predicted ICE.
         """
 
         if num_strata == None:
-            num_strata = len(X)//1000
+            num_strata = len(X)//10000
 
         e = self.propensity_score_learner.predict_proba(X)[:,1]
         e = pd.DataFrame({"e": e}).sort_values("e")
 
-        data = pd.concat([treatment, y], axis=1).reindex(e.index)
+        indices_strata = np.array_split(e.index, num_strata, axis=0)
 
-        strata = np.array_split(data, num_strata, axis=0)
+        def _tauStratum(indices_stratum):
+            y_strat = y[indices_stratum]
+            T_strat = treatment[indices_stratum]
+            return np.full(
+                len(indices_stratum),
+                y_strat[T_strat == 1].mean() - y_strat[T_strat == 0].mean()
+            )
 
-        res = np.apply_along_axis(lambda df: print(df[0], df[1]), 0, strata)
+        tau_list = np.hstack([_tauStratum(indices_stratum) for indices_stratum in indices_strata])
 
+        if np.isnan(tau_list[e.index]).sum() != 0:
+            print(
+                "Warning: The Positivity assumption is not satisfied across all strata. \n"\
+                "Strata lacking treatment or control have been filled with numpy.nan values. "\
+                "Consider reducing the number of strata [num_strata]. "\
+            )
 
-        return res
+        return tau_list[e.index]
 
     def estimate_ate(
             self,
@@ -538,7 +560,9 @@ class PStratification:
             pretrain : bool = True
         ) -> float:
         """
-        Predicts the Average Treatment Effect (ATE).
+        Predicts the Average Causal Effect (ACE),
+        also refered to as the Average Treatment Effect (ATE).
+        (The term ATE is used in the method name for compatibility purposes.)
 
         Parameters
         ----------
@@ -552,37 +576,17 @@ class PStratification:
         Returns
         -------
         float
-            The value of the ATE.
+            The value of the ACE.
         """
 
-        return self.predict(X, treatment, y)#.mean()
+        tau = self.predict(X, treatment, y)
 
+        if np.isnan(tau).sum() != 0:
+            print(
+                "The ACE is calculated after excluding the NaN values."
+            )
+        return tau[~np.isnan(tau)].mean()
 
-
-
-
-    def Pstrat(self, num_strata : int = None):
-        """
-        """
-        if num_strata == None:
-            num_strata = len(self.df)//1000
-
-        e = self.e if self.e is not None else self.propensityScoreFunc()
-        e_pred = e.predict_proba(self.df[[*self.X]])[:,1]
-        e_pred = pd.DataFrame({"e":e_pred}).sort_values("e")
-
-        df = self.df.reindex(e_pred.index)
-        strata = np.array_split(df, num_strata)
-        tau_list = [len(Y)*(Y[Y[self.T] == 1][self.Y].mean() - Y[Y[self.T] == 0][self.Y].mean()) for Y in strata]
-
-        if self.cond == None:
-            return sum(tau_list)/len(df)
-        else:
-            cond_df = pd.DataFrame(columns=[*self.X], index=[0], data=self.cond)
-            e_index = e_pred["e"].searchsorted(e.predict_proba(cond_df))[0,1]
-            strata_index = -1 if e_index == len(df) else df.index[e_index]//num_strata
-            Y = strata[strata_index]
-            return Y[Y[self.T] == 1][self.Y].mean() - Y[Y[self.T] == 0][self.Y].mean()
 
 class IPW:
     """
@@ -629,6 +633,7 @@ class IPW:
         y : np.ndarray | pd.Series,
             The outcome vector.
         """
+
         self.propensity_score_learner.fit(X=X, y=treatment)
 
     def predict(
@@ -638,7 +643,8 @@ class IPW:
             y : np.ndarray | pd.Series | None = None,
         )-> np.ndarray:
         """
-        Predict the Individual Treatment Effect (ITE).
+        Predict the Idividual Causal Effect (ICE),
+        also referd to as the Individual Treatment Effect (ITE).
 
         Parameters
         ----------
@@ -652,7 +658,7 @@ class IPW:
         Returns
         -------
         np.ndarray
-            An array containing the predicted ITE.
+            An array containing the predicted ICE.
         """
 
         e = self.propensity_score_learner.predict_proba(X)[:,1]
@@ -668,7 +674,9 @@ class IPW:
             pretrain : bool = True
         ) -> float:
         """
-        Predicts the Average Treatment Effect (ATE).
+        Predicts the Average Causal Effect (ACE),
+        also refered to as the Average Treatment Effect (ATE).
+        (The term ATE is used in the method name for compatibility purposes.)
 
         Parameters
         ----------
@@ -682,7 +690,7 @@ class IPW:
         Returns
         -------
         float
-            The value of the ATE.
+            The value of the ACE.
         """
 
         return self.predict(X, treatment, y).mean()

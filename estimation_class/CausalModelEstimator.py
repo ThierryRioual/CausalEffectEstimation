@@ -4,11 +4,29 @@ import pyAgrum.causal as csl
 import numpy as np
 import pandas as pd
 
+import pyAgrum.lib.notebook as gnb
+import pyAgrum.causal.notebook as cslnb
+
 class CausalModelEstimator:
     """
     A Causal Baysian Network estimator.
     Uses LazyPropagation from pyAgrum.causal to determine the causal effect.
     """
+
+    def _useCausalStructure(self, cm_clone, causal_model):
+        """
+        """
+        for id in causal_model.latentVariablesIds():
+            childrens = causal_model.causalBN().children(id)
+            childrens = {
+                causal_model.causalBN().variable(c).name() for c in childrens
+            }
+            cm_clone.addLatentVariable(
+                causal_model.causalBN().variable(id).name(), tuple(childrens)
+            )
+        for x, y in causal_model.arcs():
+            if not cm_clone.existsArc(x, y):
+                cm_clone.addCausalArc(x, y)
 
     def __init__(
             self,
@@ -17,7 +35,7 @@ class CausalModelEstimator:
             outcome : str,
         ) -> None:
         """
-        Initialize an IPW estimator.
+        Initialize an Causal Model estimator.
 
         Parameters
         ----------
@@ -27,8 +45,13 @@ class CausalModelEstimator:
         """
         if isinstance(causal_model, csl.CausalModel):
             self.causal_model = causal_model.clone()
+            self._useCausalStructure(
+                self.causal_model,
+                causal_model
+            )
         else:
             raise ValueError("Causal Model cannot be None. ")
+
         self.treatment = treatment
         self.outcome = outcome
 
@@ -48,22 +71,25 @@ class CausalModelEstimator:
             The uniform prior distribution. Default is 1e-9.
         """
 
-        parameter_learner = gum.BNLearner(df, self.causal_model.causalBN())
+        parameter_learner = gum.BNLearner(df, self.causal_model.observationalBN())
         parameter_learner.useNMLCorrection()
         parameter_learner.useSmoothingPrior(smoothing_prior)
 
-        bn = gum.BayesNet(self.causal_model.causalBN())
+        bn = gum.BayesNet(self.causal_model.observationalBN())
+
         parameter_learner.fitParameters(bn)
 
-        self.causal_model = csl.CausalModel(bn)
+        causal_model = csl.CausalModel(bn)
+        self._useCausalStructure(causal_model, self.causal_model)
+        self.causal_model = causal_model
 
         return self.causal_model
 
-    def __getIntervalIndex(self, x : float, var : str) -> int:
+    def _getIntervalIndex(self, x : float, var : str) -> int:
         """
         Gets the domain index of the variable.
 
-        Paramters
+        Parameters
         ---------
         x : float
             The conditional.
@@ -96,12 +122,12 @@ class CausalModelEstimator:
 
         return len(splits)-1
 
-    def __predictRow(
+    def _predictRow(
             self,
             X : pd.Series
         )-> float:
         """
-        Predict the Individual Treatment Effect (ITE) of a single row.
+        Predict the Individual Causal Effect (ICE) of a single row.
 
         Parameters
         ----------
@@ -111,13 +137,13 @@ class CausalModelEstimator:
         Returns
         -------
         float
-            The predicted ITE.
+            The predicted ICE.
         """
 
         keys = X.index.to_list() + [self.treatment]
         values = list()
         for covar in X.index:
-            values.append(self.__getIntervalIndex(X[covar], covar))
+            values.append(self._getIntervalIndex(X[covar], covar))
 
         values0 = values + [0]
         values1 = values + [1]
@@ -156,7 +182,8 @@ class CausalModelEstimator:
             y : np.ndarray | pd.Series | None = None,
         )-> np.ndarray:
         """
-        Predict the Individual Treatment Effect (ITE).
+        Predict the Idividual Causal Effect (ICE),
+        also referd to as the Individual Treatment Effect (ITE).
 
         Parameters
         ----------
@@ -172,13 +199,13 @@ class CausalModelEstimator:
         Returns
         -------
         np.ndarray
-            An array containing the predicted ITE.
+            An array containing the predicted ICE.
         """
 
         if X is not None:
-            return X.apply(self.__predictRow, axis=1).to_numpy()
+            return X.apply(self._predictRow, axis=1).to_numpy()
         else:
-            return M.apply(self.__predictRow, axis=1).to_numpy()
+            return M.apply(self._predictRow, axis=1).to_numpy()
 
 
     def estimate_ate(
@@ -191,7 +218,9 @@ class CausalModelEstimator:
             pretrain : bool = True
         ) -> float:
         """
-        Predicts the Average Treatment Effect (ATE).
+        Predicts the Average Causal Effect (ACE),
+        also refered to as the Average Treatment Effect (ATE).
+        (The term ATE is used in the method name for compatibility purposes.)
 
         Parameters
         ----------
@@ -207,7 +236,7 @@ class CausalModelEstimator:
         Returns
         -------
         float
-            The value of the ATE.
+            The value of the ACE.
         """
 
         _, cpt0, _ = csl.causalImpact(
@@ -217,12 +246,14 @@ class CausalModelEstimator:
             values={self.treatment:0}
         )
 
-        _, cpt1, _ = csl.causalImpact(
+        _, cpt1, exp = csl.causalImpact(
             self.causal_model,
             on=self.outcome,
             doing=self.treatment,
             values={self.treatment:1}
         )
+
+        #print(exp)
 
         difference = cpt1 - cpt0
         return difference.expectedValue(

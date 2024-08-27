@@ -6,6 +6,8 @@ from sklearn.svm import SVR
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.neighbors import KNeighborsRegressor
 
+# Add XGBoost
+
 def learnerFromString(learner_string : Any) -> Any:
     """
     Retrieve a scikit-learn learner based on a string specification.
